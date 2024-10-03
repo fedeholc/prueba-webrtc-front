@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import io from "socket.io-client";
 
-const VideoCallComponent2 = () => {
+const VideoCallComponent = () => {
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
   const peerConnectionRef = useRef(null);
@@ -10,11 +10,11 @@ const VideoCallComponent2 = () => {
   const [isCalling, setIsCalling] = useState(false);
   const [isRoomJoined, setIsRoomJoined] = useState(false);
   const [users, setUsers] = useState([]);
-  const [hasLocalStream, setHasLocalStream] = useState(false);
+  const iceCandidatesQueue = useRef([]);
 
   useEffect(() => {
     console.log("inicio useEffect");
-    socketRef.current = io("https://10.160.7.103:3443");
+    socketRef.current = io("https://10.160.30.99:3443");
 
     socketRef.current.on("usersInRoom", (users) => {
       console.log("users in room", users);
@@ -40,20 +40,18 @@ const VideoCallComponent2 = () => {
     const setupMediaDevices = async () => {
       try {
         const stream = await getMediaStream();
-        if (stream) {
+        if (stream && localVideoRef.current) {
           localVideoRef.current.srcObject = stream;
-          setHasLocalStream(true);
         }
       } catch (error) {
-        console.error("No media stream available", error);
-        setHasLocalStream(false);
+        console.error("Error setting up media devices:", error);
       }
     };
 
     setupMediaDevices();
   }, []);
 
-  const createPeerConnection = () => {
+  const createPeerConnection = (stream) => {
     const peerConnection = new RTCPeerConnection({
       iceServers: [
         { urls: "stun:stun.l.google.com:19302" },
@@ -63,9 +61,9 @@ const VideoCallComponent2 = () => {
       ],
     });
 
-    if (localVideoRef.current && localVideoRef.current.srcObject) {
-      localVideoRef.current.srcObject.getTracks().forEach((track) => {
-        peerConnection.addTrack(track, localVideoRef.current.srcObject);
+    if (stream) {
+      stream.getTracks().forEach((track) => {
+        peerConnection.addTrack(track, stream);
       });
     }
 
@@ -76,12 +74,9 @@ const VideoCallComponent2 = () => {
     };
 
     peerConnection.onicecandidate = (event) => {
-      console.log("onicecandidate event:", event);
       if (event.candidate) {
         console.log("Enviando candidato ICE:", event.candidate);
         socketRef.current.emit("ice-candidate", event.candidate, roomId);
-      } else {
-        console.log("Todos los candidatos ICE han sido enviados.");
       }
     };
 
@@ -98,18 +93,16 @@ const VideoCallComponent2 = () => {
   const startCall = async () => {
     if (!isCalling && isRoomJoined) {
       setIsCalling(true);
-      createPeerConnection();
+      const stream = await getMediaStream();
+      createPeerConnection(stream);
 
       try {
-        const offer = await peerConnectionRef.current.createOffer({
-          offerToReceiveAudio: true,
-          offerToReceiveVideo: true,
-        });
+        const offer = await peerConnectionRef.current.createOffer();
         await peerConnectionRef.current.setLocalDescription(offer);
         console.log("Enviando oferta:", offer);
         socketRef.current.emit("offer", offer, roomId);
       } catch (error) {
-        console.error("Error al crear la oferta:", error);
+        console.error("Error creating offer:", error);
         setIsCalling(false);
       }
     }
@@ -134,7 +127,8 @@ const VideoCallComponent2 = () => {
 
   const handleOffer = async (offer) => {
     if (!peerConnectionRef.current) {
-      createPeerConnection();
+      const stream = await getMediaStream();
+      createPeerConnection(stream);
     }
 
     try {
@@ -145,7 +139,7 @@ const VideoCallComponent2 = () => {
       await peerConnectionRef.current.setLocalDescription(answer);
       socketRef.current.emit("answer", answer, roomId);
     } catch (error) {
-      console.error("Error al manejar la oferta:", error);
+      console.error("Error handling offer:", error);
     }
   };
 
@@ -154,22 +148,43 @@ const VideoCallComponent2 = () => {
       await peerConnectionRef.current.setRemoteDescription(
         new RTCSessionDescription(answer)
       );
+      console.log("Remote description set successfully.");
+      processIceCandidateQueue();
     } catch (error) {
-      console.error("Error al manejar la respuesta:", error);
+      console.error("Error setting remote description:", error);
     }
   };
 
-  const handleNewICECandidateMsg = async (candidate) => {
-    try {
-      console.log("Recibiendo candidato ICE:", candidate);
-      if (peerConnectionRef.current) {
-        await peerConnectionRef.current.addIceCandidate(
-          new RTCIceCandidate(candidate)
-        );
-        console.log("Candidato ICE agregado con éxito.");
-      }
-    } catch (error) {
-      console.error("Error al agregar el candidato ICE:", error);
+  const handleNewICECandidateMsg = (candidate) => {
+    console.log("Recibiendo candidato ICE:", candidate);
+    if (
+      peerConnectionRef.current &&
+      peerConnectionRef.current.remoteDescription
+    ) {
+      peerConnectionRef.current
+        .addIceCandidate(new RTCIceCandidate(candidate))
+        .then(() => console.log("ICE candidate added successfully."))
+        .catch((error) => console.error("Error adding ICE candidate:", error));
+    } else {
+      iceCandidatesQueue.current.push(candidate);
+      console.log("ICE candidate queued.");
+    }
+  };
+
+  const processIceCandidateQueue = () => {
+    if (
+      peerConnectionRef.current &&
+      peerConnectionRef.current.remoteDescription
+    ) {
+      iceCandidatesQueue.current.forEach((candidate) => {
+        peerConnectionRef.current
+          .addIceCandidate(new RTCIceCandidate(candidate))
+          .then(() => console.log("Queued ICE candidate added successfully."))
+          .catch((error) =>
+            console.error("Error adding queued ICE candidate:", error)
+          );
+      });
+      iceCandidatesQueue.current = [];
     }
   };
 
@@ -187,11 +202,7 @@ const VideoCallComponent2 = () => {
       <button onClick={startCall} disabled={!isRoomJoined || isCalling}>
         Start Call
       </button>
-      {hasLocalStream ? (
-        <video ref={localVideoRef} autoPlay muted playsInline />
-      ) : (
-        <p>No local media available</p>
-      )}
+      <video ref={localVideoRef} autoPlay muted playsInline />
       <video ref={remoteVideoRef} autoPlay playsInline />
       <h2>Users in room:</h2>
       <ul>
@@ -203,4 +214,4 @@ const VideoCallComponent2 = () => {
   );
 };
 
-export default VideoCallComponent2;
+export default VideoCallComponent;

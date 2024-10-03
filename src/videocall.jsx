@@ -17,7 +17,7 @@ const VideoCallComponent = () => {
     //if user is connected do not reconect
 
     console.log("inicio usefect");
-    socketRef.current = io("https://192.168.0.59:3443");
+    socketRef.current = io("https://10.160.7.86:3443");
 
     socketRef.current.on("usersInRoom", (users) => {
       // Actualizar la lista de usuarios en la interfaz
@@ -156,16 +156,14 @@ const VideoCallComponent = () => {
       }
     }
   };
+
   const handleOffer = async (offer) => {
     if (!peerConnectionRef.current) {
       const stream = await getMediaStream();
-      if (stream) {
-        localVideoRef.current.srcObject = stream;
-        createPeerConnection(stream);
-      } else {
-        localVideoRef.current.srcObject = null;
-        createPeerConnection(null);
-      }
+      createPeerConnection(stream);
+    }
+
+    if (peerConnectionRef.current.signalingState === "stable") {
       await peerConnectionRef.current.setRemoteDescription(
         new RTCSessionDescription(offer)
       );
@@ -173,26 +171,77 @@ const VideoCallComponent = () => {
       const answer = await peerConnectionRef.current.createAnswer();
       await peerConnectionRef.current.setLocalDescription(answer);
       socketRef.current.emit("answer", answer, roomId);
+    } else {
+      console.warn(
+        "No se puede establecer la oferta en este estado:",
+        peerConnectionRef.current.signalingState
+      );
     }
   };
 
+  const iceCandidatesQueue = [];
+
   const handleAnswer = async (answer) => {
-    await peerConnectionRef.current.setRemoteDescription(
-      new RTCSessionDescription(answer)
-    );
+    if (peerConnectionRef.current.signalingState === "have-local-offer") {
+      peerConnectionRef.current
+        .setRemoteDescription(new RTCSessionDescription(answer))
+        .then(() => {
+          console.log("Remote description set successfully.");
+          // Add all queued ICE candidates
+          while (iceCandidatesQueue.length > 0) {
+            const candidate = iceCandidatesQueue.shift();
+            console.log("Adding queued ICE candidate:", candidate);
+            peerConnectionRef.current
+              .addIceCandidate(new RTCIceCandidate(candidate))
+              .then(() => {
+                console.log("Queued ICE candidate added successfully.");
+              })
+              .catch((error) => {
+                console.error("Error adding queued ICE candidate:", error);
+              });
+          }
+        })
+        .catch((error) => {
+          console.error("Error setting remote description:", error);
+        });
+    } else {
+      console.warn("Attempted to set remote description in stable state.");
+    }
   };
 
   const handleNewICECandidateMsg = async (candidate) => {
     try {
-      console.log("Recibiendo candidato ICE:", candidate); // Agregar log
+      console.log("Recibiendo candidato ICE:", candidate);
       if (peerConnectionRef.current) {
-        await peerConnectionRef.current.addIceCandidate(
-          new RTCIceCandidate(candidate)
-        );
-        console.log("Candidato ICE agregado con éxito.");
+        if (
+          peerConnectionRef.current.remoteDescription &&
+          peerConnectionRef.current.remoteDescription.type
+        ) {
+          console.log(
+            "Remote description is set, adding ICE candidate:",
+            candidate
+          );
+          peerConnectionRef.current
+            .addIceCandidate(new RTCIceCandidate(candidate))
+            .then(() => {
+              console.log("ICE candidate added successfully.");
+            })
+            .catch((error) => {
+              console.error("Error adding ICE candidate:", error);
+            });
+        } else {
+          console.log(
+            "Remote description not set, queuing ICE candidate:",
+            candidate
+          );
+          // Queue the candidate if remote description is not set
+          iceCandidatesQueue.push(candidate);
+        }
+      } else {
+        console.warn("peerConnectionRef.current is null.");
       }
     } catch (error) {
-      console.error("Error al agregar el candidato ICE:", error);
+      console.error("Error handling ICE candidate:", error);
     }
   };
 
