@@ -37,14 +37,20 @@ const VideoCallComponent = () => {
   useEffect(() => {
     const setupMediaDevices = async () => {
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: true,
-          audio: true,
-        });
-        localVideoRef.current.srcObject = stream;
-        return stream;
+        const stream = await getMediaStream();
+        if (stream) {
+          console.log("stream: ", stream);
+          localVideoRef.current.srcObject = stream;
+          return stream;
+        }
       } catch (error) {
-        console.error("Error accessing media devices:", error);
+        console.warn("No video stream available, trying audio only", error);
+        try {
+          return await navigator.mediaDevices.getUserMedia({ audio: true });
+        } catch (error) {
+          console.error("No media stream available", error);
+          return null;
+        }
       }
     };
 
@@ -67,9 +73,11 @@ const VideoCallComponent = () => {
       iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
     });
 
-    stream.getTracks().forEach((track) => {
-      peerConnection.addTrack(track, stream);
-    });
+    if (stream) {
+      stream.getTracks().forEach((track) => {
+        peerConnection.addTrack(track, stream);
+      });
+    }
 
     peerConnection.ontrack = (event) => {
       if (remoteVideoRef.current) {
@@ -107,15 +115,33 @@ const VideoCallComponent = () => {
     }
   };
 
-  const handleOffer = async (offer) => {
-    if (!peerConnectionRef.current) {
-      const stream = await navigator.mediaDevices.getUserMedia({
+  const getMediaStream = async () => {
+    try {
+      return await navigator.mediaDevices.getUserMedia({
         video: true,
         audio: true,
       });
-      localVideoRef.current.srcObject = stream;
-      createPeerConnection(stream);
-
+    } catch (error) {
+      console.warn("No video stream available, trying audio only", error);
+      try {
+        return await navigator.mediaDevices.getUserMedia({ audio: true });
+      } catch (error) {
+        console.error("No media stream available", error);
+        return null;
+      }
+    }
+  };
+  const handleOffer = async (offer) => {
+    if (!peerConnectionRef.current) {
+      const stream = await getMediaStream();
+      console.log("stream: ", stream);
+      if (stream) {
+        console.log("stream: ", stream);
+        localVideoRef.current.srcObject = stream;
+        createPeerConnection(stream);
+      } else {
+        createPeerConnection(null);
+      }
       await peerConnectionRef.current.setRemoteDescription(
         new RTCSessionDescription(offer)
       );
@@ -156,7 +182,7 @@ const VideoCallComponent = () => {
       <ul>
         {users.length === 0 && <li>No users in room</li>}
         {users.length > 0 &&
-          users.map((user) => <li key={user}>{user.socketId}</li>)}
+          users.map((user) => <li key={user.socketId}>{user.socketId}</li>)}
       </ul>
     </div>
   );
